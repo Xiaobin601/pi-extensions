@@ -1,0 +1,16 @@
+{
+  "name": "pi-extensions",
+  "version": "1.0.0",
+  "description": "Pi extensions from badlogic workspace (sitegeist-remote-bridge, custom-provider-deepseek, etc.)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "typebox": "^1.1.24",
+    "ws": "^8.18.0"
+  }
+}
