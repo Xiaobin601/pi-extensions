@@ -4,17 +4,17 @@ Pi 扩展源码位于 **`pi-extensions/sitegeist-remote-bridge/`**（本 git 仓
 
 ## 作用摘要
 
-通过本机 WebSocket 桥（在 Sitegeist 仓库中通常为 `sitegeist/scripts/sitegeist-bridge.mjs`），让 Pi coding agent **向 Sitegeist Chrome 扩展侧栏追加用户消息并跑一轮模型**。用户消息在侧栏以 **`/sitegeist`** 前缀显示。**`sitegeist_append_user`** 默认开启流式，可用 **`stream: false`** 仅收 ack。
+通过本机 WebSocket 桥（Sitegeist 仓库内 **`packages/sitegeist-local-bridge`**，`@badlogic/sitegeist-local-bridge`），让 Pi coding agent **向 Sitegeist Chrome 扩展侧栏追加用户消息并跑一轮模型**。用户消息在侧栏以 **`/sitegeist`** 前缀显示。**`sitegeist_append_user`** 默认开启流式，可用 **`stream: false`** 仅收 ack。
 
 ## 架构与交互流程
 
-Pi、**本目录下的 Pi 扩展 `sitegeist-remote-bridge`** 与 **Sitegeist（Chrome 扩展）** 不直连：二者都只连 **同一台本机 Node 桥**（Sitegeist 仓库里 `npm run bridge`），由桥在 **CLI 连接** 与 **唯一一条 extension 长连接** 之间转发 JSON。
+Pi、**本目录下的 Pi 扩展 `sitegeist-remote-bridge`** 与 **Sitegeist（Chrome 扩展）** 不直连：二者都只连 **同一台本机 Node 桥**（在 **`sitegeist/packages/sitegeist-local-bridge`** 下 **`npm install` · `npm run bridge`**），由桥在 **CLI 连接** 与 **唯一一条 extension 长连接** 之间转发 JSON。
 
 | 组件 | 角色 | 连接 |
 |------|------|------|
 | **Pi** | 终端里的 coding agent | 经本扩展的 `bridge-client`，以 WebSocket **`role: cli`** 连桥 |
 | **sitegeist-remote-bridge** | Pi 进程内加载的扩展（`index.ts` + 工具 / `/sitegeist`） | 仅使用 `SITEGEIST_BRIDGE_*` 发请求，不经过浏览器 |
-| **Node 桥** | `sitegeist-bridge.mjs` | 监听 `127.0.0.1` 与端口（默认 18766），校验 token |
+| **Node 桥** | `@badlogic/sitegeist-local-bridge` | 监听 `127.0.0.1` 与端口（默认 18766），校验 token |
 | **Sitegeist** | Chrome MV3 扩展 | 后台 **`role: extension`** 长连到桥；侧栏负责真实会话与 UI |
 
 ### 静态关系
@@ -28,7 +28,7 @@ flowchart TB
 			PiAgent --> Ext
 		end
 
-		subgraph BridgeProc["Node 桥 sitegeist-bridge.mjs"]
+		subgraph BridgeProc["@badlogic/sitegeist-local-bridge"]
 			WSS["WebSocket Server<br/>127.0.0.1 : 18766（可配）"]
 		end
 
@@ -90,12 +90,12 @@ sequenceDiagram
 
 1. **Sitegeist 扩展**：侧栏 **设置 → Pi bridge**，token/port 与桥、Pi **三方一致**；token 留空即用默认 **`test_token`**。
 
-2. **启动 Node 桥**（在 Sitegeist 子项目目录，例如 **`sitegeist/`**）：  
+2. **启动 Node 桥**：进入 **Sitegeist** 仓库中的 **`packages/sitegeist-local-bridge/`**：  
    ```bash
+   npm install
    npm run bridge
    ```  
-   或显式指定：  
-   `SITEGEIST_BRIDGE_TOKEN=你的密钥 npm run bridge`
+   自定义密钥：`SITEGEIST_BRIDGE_TOKEN=你的密钥 npm run bridge`。**Sitegeist 根目录没有** `npm run bridge`。
 
 3. **运行 Pi 的 shell**  
    - **`SITEGEIST_BRIDGE_TOKEN`**：可选；未设置时 Pi 扩展与常规桥脚本均默认 **`test_token`**。自定义密钥时请与 Chrome 存储、桥进程一致。  
@@ -120,6 +120,8 @@ sequenceDiagram
 
 - **`sitegeist/.pi/extensions/sitegeist-remote-bridge/task_P3.md`**
 - **`sitegeist/.pi/extensions/sitegeist-remote-bridge/task_P4_streaming.md`**
+
+**须先**在 **`sitegeist/packages/sitegeist-local-bridge`** 终端 **`npm install` · `npm run bridge`**：
 
 ```bash
 cd sitegeist && npm run test:bridge-p3

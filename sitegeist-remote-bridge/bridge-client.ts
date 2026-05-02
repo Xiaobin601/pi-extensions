@@ -1,10 +1,10 @@
 import type { AgentToolUpdateCallback } from "@mariozechner/pi-coding-agent";
+import { REMOTE_BRIDGE_PROTOCOL_V1 } from "@badlogic/sitegeist-bridge-protocol";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { SitegeistBridgeConfig } from "./config";
 import { bridgeWsUrl } from "./config";
 
-const PROTOCOL_V1 = 1;
 const DEFAULT_WAIT_MS = 30_000;
 const DEFAULT_STREAM_WAIT_MS = 900_000;
 
@@ -110,7 +110,7 @@ export async function bridgePing(
 	return bridgeCliRoundTrip(
 		config,
 		(ws) => {
-			ws.send(JSON.stringify({ v: PROTOCOL_V1, cmd: "ping", id }));
+			ws.send(JSON.stringify({ v: REMOTE_BRIDGE_PROTOCOL_V1, cmd: "ping", id }));
 		},
 		signal,
 		waitMs,
@@ -133,7 +133,7 @@ export async function bridgeAppendUserAndRun(
 		(ws) => {
 			const sid = input.sessionId?.trim();
 			const envelope: Record<string, unknown> = {
-				v: PROTOCOL_V1,
+				v: REMOTE_BRIDGE_PROTOCOL_V1,
 				cmd: "append_user_and_run",
 				id,
 				payload: { text: input.text },
@@ -275,7 +275,7 @@ export async function bridgeAppendUserStream(
 
 		const sid = input.sessionId?.trim();
 		const envelope: Record<string, unknown> = {
-			v: PROTOCOL_V1,
+			v: REMOTE_BRIDGE_PROTOCOL_V1,
 			cmd: "append_user_and_run",
 			id,
 			payload: { text: input.text, stream: true },
