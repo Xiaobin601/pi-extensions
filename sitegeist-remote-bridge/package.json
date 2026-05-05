@@ -1,0 +1,21 @@
+{
+	"name": "@badlogic/sitegeist-remote-bridge-extension",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "vitest run",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@badlogic/sitegeist-bridge-protocol": "file:../../sitegeist-bridge-protocol",
+		"@mariozechner/pi-coding-agent": "file:../../pi-mono/packages/coding-agent",
+		"typebox": "^1.1.24",
+		"ws": "^8.18.3"
+	},
+	"devDependencies": {
+		"@types/ws": "^8.5.13",
+		"@types/node": "^22.10.5",
+		"typescript": "~5.7.3",
+		"vitest": "^3.2.4"
+	}
+}

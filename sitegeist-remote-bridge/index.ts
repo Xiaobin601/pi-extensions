@@ -10,99 +10,71 @@ import {
 	type ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import {
-	bridgeAppendUserAndRun,
-	bridgeAppendUserStream,
-	bridgePing,
-	type StreamAppendOutcome,
-} from "./bridge-client";
+import { bridgeAppendUserAndRun, bridgeAppendUserStream, bridgePing } from "./bridge-client";
 import { loadSitegeistBridgeConfig } from "./config";
-
-function formatAppendResult(r: Awaited<ReturnType<typeof bridgeAppendUserAndRun>>): {
-	content: Array<{ type: "text"; text: string }>;
-	details: Record<string, unknown>;
-} {
-	if (r.kind === "ack") {
-		return {
-			content: [{ type: "text", text: "Sitegeist bridge: message queued (append_user_and_run ack)." }],
-			details: { bridge: "ok", id: r.id, raw: r.raw },
-		};
-	}
-	const detail = r.detail ? ` (${r.detail})` : "";
-	return {
-		content: [
-			{
-				type: "text",
-				text: `Sitegeist bridge error: ${r.error}${detail}`,
-			},
-		],
-		details: { bridge: "error", id: r.id, error: r.error, detail: r.detail, raw: r.raw },
-	};
-}
-
-function formatStreamAppendResult(r: StreamAppendOutcome): {
-	content: Array<{ type: "text"; text: string }>;
-	details: Record<string, unknown>;
-} {
-	if (r.kind === "ok") {
-		const preview =
-			r.accumulated.length > 2000 ? `${r.accumulated.slice(0, 2000)}…` : r.accumulated;
-		return {
-			content: [
-				{
-					type: "text",
-					text: `Sitegeist stream finished. Assistant text (preview):\n${preview || "(empty)"}`,
-				},
-			],
-			details: { bridge: "stream_ok", id: r.id, frameCount: r.frames.length },
-		};
-	}
-	const detail = r.detail ? ` (${r.detail})` : "";
-	return {
-		content: [{ type: "text", text: `Sitegeist bridge stream error: ${r.error}${detail}` }],
-		details: { bridge: "stream_error", id: r.id, error: r.error, detail: r.detail, raw: r.raw },
-	};
-}
+import {
+	SITEGEIST_BRIDGE_RESULT_CUSTOM_TYPE,
+	SITEGEIST_USER_CUSTOM_TYPE,
+	SITEGEIST_ECHO_MAX_CHARS,
+	bridgedAssistantTranscript,
+	extractSlashBridgeOutcomeBody,
+	formatAppendResult,
+	formatStreamAppendResult,
+	parseSitegeistSlashArgs,
+	withSentEchoBlock,
+} from "./extension-transcript";
 
 type SitegeistAppendUserResult = AgentToolResult<Record<string, unknown>>;
 
-/** Parse `/sitegeist [--no-stream] [sessionUuid] rest…` (streaming on by default; same as sitegeist_append_user). */
-function parseSitegeistSlashArgs(raw: string): { stream: boolean; sessionId?: string; text: string } {
-	let s = raw.trim();
-	let stream = true;
-	if (s.startsWith("--no-stream ")) {
-		stream = false;
-		s = s.slice("--no-stream".length).trim();
-	} else if (s === "--no-stream") {
-		stream = false;
-		s = "";
-	} else if (s.startsWith("--stream ")) {
-		s = s.slice("--stream".length).trim();
-	} else if (s === "--stream") {
-		s = "";
-	} else if (s.startsWith("-s ")) {
-		s = s.slice(3).trim();
-	} else if (s === "-s") {
-		s = "";
-	}
-	if (!s) return { stream, text: "" };
-	const uuidLead =
-		/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s+([\s\S]+)$/i.exec(s);
-	if (uuidLead) {
-		return { stream, sessionId: uuidLead[1], text: uuidLead[2].trim() };
-	}
-	return { stream, text: s };
+/** Slash `/sitegeist` has no tool card — append bridge outcome body (after echoed prefix) to the transcript */
+function appendBridgeOutcomeToSlashTranscript(pi: ExtensionAPI, result: SitegeistAppendUserResult): void {
+	const c0 = result.content[0];
+	if (c0?.type !== "text") return;
+	const body = extractSlashBridgeOutcomeBody(c0.text);
+	if (!body) return;
+
+	pi.sendMessage(
+		{
+			customType: SITEGEIST_BRIDGE_RESULT_CUSTOM_TYPE,
+			display: true,
+			content: body,
+			details: result.details,
+		},
+		{ triggerTurn: false },
+	);
+}
+
+/** Slash command only: transcript line when idle (after waitForIdle). */
+function echoSentTextIntoPiTranscript(pi: ExtensionAPI, params: { text: string; sessionId?: string }): void {
+	const t = typeof params.text === "string" ? params.text.trim() : "";
+	if (!t) return;
+	const sid = params.sessionId?.trim();
+	const header = sid ? `Sent to Sitegeist (session ${sid}):\n\n` : "Sent to Sitegeist:\n\n";
+	const body =
+		t.length > SITEGEIST_ECHO_MAX_CHARS ? `${t.slice(0, SITEGEIST_ECHO_MAX_CHARS)}… [truncated]` : t;
+
+	pi.sendMessage(
+		{
+			customType: SITEGEIST_USER_CUSTOM_TYPE,
+			display: true,
+			content: header + body,
+			details: sid ? { sessionId: sid } : undefined,
+		},
+		{ triggerTurn: false },
+	);
 }
 
 async function executeSitegeistAppendUser(
 	params: { sessionId?: string; text: string; stream?: boolean },
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<Record<string, unknown>> | undefined,
+	opts?: { skipDeferredBridgedAssistantBubble?: boolean },
 ): Promise<SitegeistAppendUserResult> {
+	const sentText = params.text;
 	const loaded = loadSitegeistBridgeConfig();
 	if (!loaded.ok) {
 		return {
-			content: [{ type: "text", text: loaded.error }],
+			content: [{ type: "text", text: withSentEchoBlock(sentText, loaded.error) }],
 			details: { bridge: "config", error: loaded.error },
 		};
 	}
@@ -115,14 +87,17 @@ async function executeSitegeistAppendUser(
 				signal,
 				onUpdate,
 			);
-			return formatStreamAppendResult(r);
+			if (!opts?.skipDeferredBridgedAssistantBubble && r.kind === "ok") {
+				bridgedAssistantTranscript.enqueue(r.accumulated);
+			}
+			return formatStreamAppendResult(sentText, r);
 		}
 		const r = await bridgeAppendUserAndRun(loaded.config, params, signal);
-		return formatAppendResult(r);
+		return formatAppendResult(sentText, r);
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		return {
-			content: [{ type: "text", text: `Sitegeist bridge failed: ${msg}` }],
+			content: [{ type: "text", text: withSentEchoBlock(sentText, `Sitegeist bridge failed: ${msg}`) }],
 			details: { bridge: "exception", message: msg },
 		};
 	}
@@ -141,6 +116,29 @@ function notifySitegeistAppendOutcome(ctx: ExtensionCommandContext, result: Site
 	ctx.ui.notify(text, isErr ? "error" : "info");
 }
 
+/** After `/sitegeist`, avoid duplicating echoed text + tool body in toast (conversation already lists them). */
+function notifySitegeistSlashBrief(ctx: ExtensionCommandContext, result: SitegeistAppendUserResult): void {
+	const bridge = result.details.bridge as string | undefined;
+	const isErr =
+		bridge === "error" ||
+		bridge === "stream_error" ||
+		bridge === "config" ||
+		bridge === "exception";
+	if (isErr) {
+		notifySitegeistAppendOutcome(ctx, result);
+		return;
+	}
+	if (bridge === "stream_ok") {
+		ctx.ui.notify("Sitegeist stream finished — see transcript (custom bubble + bridged assistant lines).", "info");
+		return;
+	}
+	if (bridge === "ok") {
+		ctx.ui.notify("Sitegeist: message queued.", "info");
+		return;
+	}
+	ctx.ui.notify("Sitegeist command finished.", "info");
+}
+
 const appendUserParameters = Type.Object({
 	sessionId: Type.Optional(
 		Type.String({
@@ -157,21 +155,6 @@ const appendUserParameters = Type.Object({
 	),
 });
 
-const appendTool = defineTool<typeof appendUserParameters, Record<string, unknown>>({
-	name: "sitegeist_append_user",
-	label: "Sitegeist append user",
-	description:
-		"Append a user message to a Sitegeist sidepanel session and run the model. Requires the Sitegeist extension connected to the local bridge. The sidepanel shows the turn as a /sitegeist-prefixed user message so it is obvious it came from Pi. Omit sessionId to target whichever session is currently open in the sidepanel (single-window setup). If sessionId is set, it must match the sidepanel URL ?session=. Set SITEGEIST_BRIDGE_TOKEN (and optionally SITEGEIST_BRIDGE_PORT, SITEGEIST_BRIDGE_HOST). By default streams assistant text into this tool result as it is generated (set stream=false for ack-only; needs Sitegeist build with P4 streaming).",
-	promptSnippet: "Send text into a Sitegeist browser session via the local WS bridge",
-	promptGuidelines: [
-		"Use sitegeist_append_user when the user wants to inject a message into an open Sitegeist sidepanel session (sessionId from ?session= in the URL, or omit sessionId for the current session).",
-	],
-	parameters: appendUserParameters,
-	async execute(_toolCallId, params, signal, onUpdate) {
-		return executeSitegeistAppendUser(params, signal, onUpdate);
-	},
-});
-
 const pingParameters = Type.Object({});
 
 const pingTool = defineTool<typeof pingParameters, Record<string, unknown>>({
@@ -180,7 +163,7 @@ const pingTool = defineTool<typeof pingParameters, Record<string, unknown>>({
 	description:
 		"Ping the local Sitegeist WebSocket bridge (SITEGEIST_BRIDGE_TOKEN / SITEGEIST_BRIDGE_PORT). Use to verify the bridge process is reachable before append_user.",
 	parameters: pingParameters,
-	async execute(_toolCallId, _params, signal) {
+	async execute(_toolCallId, _params, signal, _onUpdate, _ctx) {
 		const loaded = loadSitegeistBridgeConfig();
 		if (!loaded.ok) {
 			return {
@@ -205,6 +188,23 @@ const pingTool = defineTool<typeof pingParameters, Record<string, unknown>>({
 });
 
 export default function sitegeistRemoteBridgeExtension(pi: ExtensionAPI) {
+	bridgedAssistantTranscript.register(pi);
+
+	const appendTool = defineTool<typeof appendUserParameters, Record<string, unknown>>({
+		name: "sitegeist_append_user",
+		label: "Sitegeist append user",
+		description:
+			"Append a user message to a Sitegeist sidepanel session and run the model. Requires the Sitegeist extension connected to the local bridge. The sidepanel shows the turn as a /sitegeist-prefixed user message so it is obvious it came from Pi. Omit sessionId to target whichever session is currently open in the sidepanel (single-window setup). If sessionId is set, it must match the sidepanel URL ?session=. Set SITEGEIST_BRIDGE_TOKEN (and optionally SITEGEIST_BRIDGE_PORT, SITEGEIST_BRIDGE_HOST). Streams assistant deltas into tool output while running; after the Pi turn settles, mirrored assistant text appears as a custom transcript line ('Sitegeist assistant (bridged)') for UIs that do not emphasize tool panels.",
+		promptSnippet: "Send text into a Sitegeist browser session via the local WS bridge",
+		promptGuidelines: [
+			"Use sitegeist_append_user when the user wants to inject a message into an open Sitegeist sidepanel session (sessionId from ?session= in the URL, or omit sessionId for the current session).",
+		],
+		parameters: appendUserParameters,
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+			return executeSitegeistAppendUser(params, signal, onUpdate);
+		},
+	});
+
 	pi.registerCommand("sitegeist", {
 		description:
 			"Send text to Sitegeist via WS bridge (usage: /sitegeist [--no-stream] [session-uuid] <message>; streaming is default)",
@@ -217,12 +217,19 @@ export default function sitegeistRemoteBridgeExtension(pi: ExtensionAPI) {
 				);
 				return;
 			}
+			await ctx.waitForIdle();
+			echoSentTextIntoPiTranscript(pi, {
+				sessionId: parsed.sessionId,
+				text: parsed.text,
+			});
 			const result = await executeSitegeistAppendUser(
 				{ sessionId: parsed.sessionId, text: parsed.text, stream: parsed.stream },
 				ctx.signal,
 				undefined,
+				{ skipDeferredBridgedAssistantBubble: true },
 			);
-			notifySitegeistAppendOutcome(ctx, result);
+			appendBridgeOutcomeToSlashTranscript(pi, result);
+			notifySitegeistSlashBrief(ctx, result);
 		},
 	});
 	pi.registerTool(appendTool);
