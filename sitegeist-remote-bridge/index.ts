@@ -10,7 +10,7 @@ import {
 	type ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { bridgeAppendUserAndRun, bridgeAppendUserStream, bridgePing } from "./bridge-client";
+import { bridgeAppendUserAndRun, bridgeAppendUserStream, bridgePing, startBridgeExecBashListener, stopBridgeExecBashListener } from "./bridge-client";
 import { loadSitegeistBridgeConfig } from "./config";
 import {
 	SITEGEIST_BRIDGE_RESULT_CUSTOM_TYPE,
@@ -189,6 +189,19 @@ const pingTool = defineTool<typeof pingParameters, Record<string, unknown>>({
 
 export default function sitegeistRemoteBridgeExtension(pi: ExtensionAPI) {
 	bridgedAssistantTranscript.register(pi);
+
+	// ── Start persistent listener for exec_bash (Sitegeist → pi direction) ──
+	const listenerConfig = loadSitegeistBridgeConfig();
+	if (listenerConfig.ok) {
+		startBridgeExecBashListener(listenerConfig.config);
+		console.log("[sitegeist-remote-bridge] exec_bash listener started");
+	} else {
+		console.log("[sitegeist-remote-bridge] exec_bash listener skipped (no bridge config)");
+	}
+
+	pi.on("unload", () => {
+		stopBridgeExecBashListener();
+	});
 
 	const appendTool = defineTool<typeof appendUserParameters, Record<string, unknown>>({
 		name: "sitegeist_append_user",

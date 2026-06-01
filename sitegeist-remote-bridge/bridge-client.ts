@@ -332,3 +332,145 @@ export async function bridgeAppendUserStream(
 		}
 	}
 }
+
+// ── Persistent listener for exec_bash (Sitegeist → pi direction) ──
+
+let listenerWs: WebSocket | null = null;
+let listenerReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let listenerRunning = false;
+
+/** Start a persistent WS connection that listens for exec_bash from Sitegeist. */
+export function startBridgeExecBashListener(config: SitegeistBridgeConfig): void {
+	if (listenerRunning) return;
+	listenerRunning = true;
+	void connectListenerLoop(config);
+}
+
+/** Stop the persistent listener. */
+export function stopBridgeExecBashListener(): void {
+	listenerRunning = false;
+	if (listenerReconnectTimer) {
+		clearTimeout(listenerReconnectTimer);
+		listenerReconnectTimer = null;
+	}
+	if (listenerWs) {
+		try { listenerWs.close(); } catch { /* ignore */ }
+		listenerWs = null;
+	}
+}
+
+async function connectListenerLoop(config: SitegeistBridgeConfig): Promise<void> {
+	while (listenerRunning) {
+		try {
+			await runListenerConnection(config);
+		} catch (e) {
+			console.error("[sitegeist-listener] connection error:", (e as Error).message);
+		}
+		if (!listenerRunning) break;
+		// Reconnect after 5s delay
+		await new Promise<void>((resolve) => {
+			listenerReconnectTimer = setTimeout(resolve, 5000);
+		});
+	}
+}
+
+async function runListenerConnection(config: SitegeistBridgeConfig): Promise<void> {
+	const url = bridgeWsUrl(config);
+	const ws = new WebSocket(url);
+	listenerWs = ws;
+
+	await new Promise<void>((resolve, reject) => {
+		ws.on("open", resolve);
+		ws.on("error", reject);
+	});
+
+	// Auth
+	ws.send(JSON.stringify({ type: "auth", token: config.token, role: "cli" }));
+	const authResp = await new Promise<Record<string, unknown>>((resolve, reject) => {
+		ws.once("message", (data) => {
+			try { resolve(JSON.parse(data.toString())); } catch (e) { reject(e); }
+		});
+		ws.once("error", reject);
+	});
+	if (authResp.type !== "auth_ok") {
+		throw new Error(`listener auth failed: ${JSON.stringify(authResp)}`);
+	}
+
+	// Register as listener
+	const listenerId = randomUUID();
+	ws.send(JSON.stringify({ v: REMOTE_BRIDGE_PROTOCOL_V1, cmd: "register_listener", id: listenerId }));
+	const regResp = await new Promise<Record<string, unknown>>((resolve, reject) => {
+		ws.once("message", (data) => {
+			try { resolve(JSON.parse(data.toString())); } catch (e) { reject(e); }
+		});
+	});
+	if (regResp.type !== "ack" || regResp.ok !== true) {
+		throw new Error(`listener register failed: ${JSON.stringify(regResp)}`);
+	}
+	console.log("[sitegeist-listener] registered, waiting for exec_bash commands");
+
+	// Listen for exec_bash commands
+	ws.on("message", (data) => {
+		let msg: Record<string, unknown>;
+		try {
+			msg = JSON.parse(data.toString());
+		} catch {
+			return;
+		}
+		if (msg.cmd !== "exec_bash" || typeof msg.id !== "string") return;
+
+		const id = msg.id as string;
+		const payload = msg.payload as { command?: string; cwd?: string; timeoutMs?: number } | undefined;
+		if (!payload?.command) {
+			ws.send(JSON.stringify({
+				v: REMOTE_BRIDGE_PROTOCOL_V1,
+				type: "exec_bash_result",
+				id,
+				cmd: "exec_bash",
+				payload: { stdout: "", stderr: "missing command", code: 1 },
+			}));
+			return;
+		}
+
+		console.log(`[sitegeist-listener] exec_bash id=${id}:`, payload.command.substring(0, 120));
+
+		// Execute and respond
+		const { exec } = require("child_process");
+		exec(
+			payload.command,
+			{
+				cwd: payload.cwd || process.cwd(),
+				timeout: payload.timeoutMs || 30000,
+				maxBuffer: 1024 * 1024,
+			},
+			(error: Error | null, stdout: string, stderr: string) => {
+				const result = {
+					v: REMOTE_BRIDGE_PROTOCOL_V1,
+					type: "exec_bash_result",
+					id,
+					cmd: "exec_bash",
+					payload: {
+						stdout: stdout || "",
+						stderr: stderr || "",
+						code: error?.code ?? 0,
+					},
+				};
+				try {
+					ws.send(JSON.stringify(result));
+				} catch {
+					console.error("[sitegeist-listener] failed to send exec_bash_result");
+				}
+			},
+		);
+	});
+
+	ws.on("close", () => {
+		listenerWs = null;
+		console.log("[sitegeist-listener] connection closed");
+	});
+
+	// Wait for close
+	await new Promise<void>((resolve) => {
+		ws.on("close", resolve);
+	});
+}
