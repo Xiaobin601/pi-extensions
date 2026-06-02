@@ -339,10 +339,33 @@ let listenerWs: WebSocket | null = null;
 let listenerReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let listenerRunning = false;
 
-/** Start a persistent WS connection that listens for exec_bash from Sitegeist. */
-export function startBridgeExecBashListener(config: SitegeistBridgeConfig): void {
+/** Handler for agent_delegate requests from Sitegeist */
+export type DelegateHandler = (
+	request: {
+		id: string;
+		mode: string;
+		prompt: string;
+		tool?: string;
+		tool_params?: Record<string, unknown>;
+		tools?: string[];
+		cwd?: string;
+		max_turns?: number;
+		depth: number;
+		max_depth: number;
+	},
+	sendResult: (result: { ok: boolean; error?: string; result?: string; turns_used?: number; tool_calls?: Array<{ tool: string; summary: string }> }) => void,
+) => void;
+
+let delegateHandler: DelegateHandler | null = null;
+
+/** Start a persistent WS connection that listens for exec_bash and agent_delegate */
+export function startBridgeExecBashListener(
+	config: SitegeistBridgeConfig,
+	onDelegate?: DelegateHandler,
+): void {
 	if (listenerRunning) return;
 	listenerRunning = true;
+	delegateHandler = onDelegate ?? null;
 	void connectListenerLoop(config);
 }
 
@@ -417,9 +440,63 @@ async function runListenerConnection(config: SitegeistBridgeConfig): Promise<voi
 		} catch {
 			return;
 		}
-		if (msg.cmd !== "exec_bash" || typeof msg.id !== "string") return;
+		if (msg.cmd !== "exec_bash" && msg.cmd !== "agent_delegate") return;
+	if (typeof msg.id !== "string") return;
 
-		const id = msg.id as string;
+	// ── agent_delegate: generic multi-agent RPC ──
+	if (msg.cmd === "agent_delegate") {
+		const id = msg.id;
+		const pl = msg.payload as Record<string, unknown> | undefined;
+		if (!delegateHandler) {
+			ws.send(JSON.stringify({
+				v: REMOTE_BRIDGE_PROTOCOL_V1, type: "agent_delegate_result",
+				id, cmd: "agent_delegate",
+				payload: { ok: false, error: "no delegate handler registered" },
+			}));
+			return;
+		}
+		// Depth check
+		const depth = (pl?.depth as number) ?? 0;
+		const maxDepth = (pl?.max_depth as number) ?? 2;
+		if (depth >= maxDepth) {
+			ws.send(JSON.stringify({
+				v: REMOTE_BRIDGE_PROTOCOL_V1, type: "agent_delegate_result",
+				id, cmd: "agent_delegate",
+				payload: { ok: false, error: `max_depth (${maxDepth}) exceeded at depth ${depth}` },
+			}));
+			return;
+		}
+		console.log(`[sitegeist-listener] agent_delegate id=${id} mode=${pl?.mode} depth=${depth}`);
+		delegateHandler(
+			{
+				id,
+				mode: (pl?.mode as string) || "direct",
+				prompt: (pl?.prompt as string) || "",
+				tool: pl?.tool as string | undefined,
+				tool_params: pl?.tool_params as Record<string, unknown> | undefined,
+				tools: pl?.tools as string[] | undefined,
+				cwd: pl?.cwd as string | undefined,
+				max_turns: pl?.max_turns as number | undefined,
+				depth,
+				max_depth: maxDepth,
+			},
+			(result) => {
+				try {
+					ws.send(JSON.stringify({
+						v: REMOTE_BRIDGE_PROTOCOL_V1,
+						type: "agent_delegate_result",
+						id,
+						cmd: "agent_delegate",
+						payload: result,
+					}));
+				} catch { /* ignore */ }
+			},
+		);
+		return;
+	}
+
+	// ── exec_bash ──
+	const id = msg.id as string;
 		const payload = msg.payload as { command?: string; cwd?: string; timeoutMs?: number } | undefined;
 		if (!payload?.command) {
 			ws.send(JSON.stringify({

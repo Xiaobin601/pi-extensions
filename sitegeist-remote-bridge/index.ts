@@ -10,7 +10,7 @@ import {
 	type ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { bridgeAppendUserAndRun, bridgeAppendUserStream, bridgePing, startBridgeExecBashListener, stopBridgeExecBashListener } from "./bridge-client";
+import { bridgeAppendUserAndRun, bridgeAppendUserStream, bridgePing, startBridgeExecBashListener, stopBridgeExecBashListener, type DelegateHandler } from "./bridge-client";
 import { loadSitegeistBridgeConfig } from "./config";
 import {
 	SITEGEIST_BRIDGE_RESULT_CUSTOM_TYPE,
@@ -187,16 +187,105 @@ const pingTool = defineTool<typeof pingParameters, Record<string, unknown>>({
 	},
 });
 
+/** Built-in pi tools safe for delegation. Never includes delegation tools. */
+const DELEGATABLE_PI_TOOLS = ["read", "bash", "edit", "write", "grep", "glob", "ls"];
+
+function createDelegateHandler(pi: ExtensionAPI): DelegateHandler {
+	return (request, sendResult) => {
+		if (request.mode === "direct") {
+			handleDirectDelegate(pi, request, sendResult);
+		} else {
+			handleAgentDelegate(pi, request, sendResult);
+		}
+	};
+}
+
+async function handleDirectDelegate(
+	pi: ExtensionAPI,
+	req: Parameters<DelegateHandler>[0],
+	sendResult: Parameters<DelegateHandler>[1],
+) {
+	const toolName = req.tool;
+	const params = req.tool_params || {};
+
+	if (!toolName || !DELEGATABLE_PI_TOOLS.includes(toolName)) {
+		sendResult({ ok: false, error: `Tool "${toolName}" not available. Available: ${DELEGATABLE_PI_TOOLS.join(", ")}` });
+		return;
+	}
+
+	try {
+		const session = (pi as any).getSession?.();
+		if (!session) { sendResult({ ok: false, error: "No active pi session" }); return; }
+
+		const systemMsg = `Execute the ${toolName} tool with these parameters: ${JSON.stringify(params)}. Return only the tool result.`;
+		await session.prompt(systemMsg, { tools: [toolName], maxTurns: 2 });
+
+		const state = session.state;
+		const toolCalls: Array<{ tool: string; summary: string }> = [{ tool: toolName, summary: "executed" }];
+		const lastAssistant = [...state.messages].reverse().find((m: any) => m.role === "assistant");
+		sendResult({ ok: true, result: lastAssistant?.content || "done", tool_calls: toolCalls });
+	} catch (e) {
+		sendResult({ ok: false, error: (e as Error).message });
+	}
+}
+
+async function handleAgentDelegate(
+	pi: ExtensionAPI,
+	req: Parameters<DelegateHandler>[0],
+	sendResult: Parameters<DelegateHandler>[1],
+) {
+	const effectiveTools = req.mode === "constrained"
+		? (req.tools || DELEGATABLE_PI_TOOLS).filter((t) => DELEGATABLE_PI_TOOLS.includes(t))
+		: DELEGATABLE_PI_TOOLS;
+
+	if (effectiveTools.length === 0) { sendResult({ ok: false, error: "No valid tools" }); return; }
+
+	const maxTurns = req.max_turns || 10;
+
+	try {
+		const session = (pi as any).getSession?.();
+		if (!session) { sendResult({ ok: false, error: "No active pi session" }); return; }
+
+		const systemMsg = [
+			"You are a sub-agent. Complete this task using ONLY the available tools.",
+			`Available tools: ${effectiveTools.join(", ")}`,
+			`Max turns: ${maxTurns}`,
+			"",
+			`Task: ${req.prompt}`,
+		].join("\n");
+
+		const toolCalls: Array<{ tool: string; summary: string }> = [];
+		await session.prompt(systemMsg, { tools: effectiveTools, maxTurns });
+
+		const state = session.state;
+		for (const msg of state.messages) {
+			if ((msg as any).role === "toolResult") {
+				toolCalls.push({ tool: (msg as any).toolName || "unknown", summary: "executed" });
+			}
+		}
+
+		const lastAssistant = [...state.messages].reverse().find((m: any) => m.role === "assistant");
+		sendResult({
+			ok: true,
+			result: lastAssistant?.content || "Task completed",
+			turns_used: state.messages.filter((m: any) => m.role === "assistant").length,
+			tool_calls: toolCalls,
+		});
+	} catch (e) {
+		sendResult({ ok: false, error: (e as Error).message });
+	}
+}
+
 export default function sitegeistRemoteBridgeExtension(pi: ExtensionAPI) {
 	bridgedAssistantTranscript.register(pi);
 
-	// ── Start persistent listener for exec_bash (Sitegeist → pi direction) ──
+	// ── Start persistent listener for exec_bash + agent_delegate ──
 	const listenerConfig = loadSitegeistBridgeConfig();
 	if (listenerConfig.ok) {
-		startBridgeExecBashListener(listenerConfig.config);
-		console.log("[sitegeist-remote-bridge] exec_bash listener started");
+		startBridgeExecBashListener(listenerConfig.config, createDelegateHandler(pi));
+		console.log("[sitegeist-remote-bridge] listener started (exec_bash + agent_delegate)");
 	} else {
-		console.log("[sitegeist-remote-bridge] exec_bash listener skipped (no bridge config)");
+		console.log("[sitegeist-remote-bridge] listener skipped (no bridge config)");
 	}
 
 	pi.on("unload", () => {
