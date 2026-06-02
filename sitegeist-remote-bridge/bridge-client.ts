@@ -127,6 +127,27 @@ export async function bridgeAppendUserAndRun(
 	signal: AbortSignal | undefined,
 	waitMs = DEFAULT_WAIT_MS,
 ): Promise<AppendBridgeResult> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		if (attempt > 0) {
+			console.log(`[sitegeist-bridge] retry append_user, attempt ${attempt + 1}/3`);
+			await new Promise(r => setTimeout(r, 2000));
+		}
+		const result = await doBridgeAppendUserAndRun(config, input, signal, waitMs);
+		// Retry on transient errors
+		if (result.kind === "error" && (result.error === "no_extension_client" || result.error === "no_sidepanel")) {
+			if (attempt < 2) continue;
+		}
+		return result;
+	}
+	return { kind: "error", id: "", error: "retry_exhausted", raw: {} };
+}
+
+async function doBridgeAppendUserAndRun(
+	config: SitegeistBridgeConfig,
+	input: { sessionId?: string; text: string },
+	signal: AbortSignal | undefined,
+	waitMs: number,
+): Promise<AppendBridgeResult> {
 	const id = randomUUID();
 	const raw = await bridgeCliRoundTrip(
 		config,
@@ -208,6 +229,27 @@ export async function bridgeAppendUserStream(
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<Record<string, unknown>> | undefined,
 	waitMs = Number(process.env.SITEGEIST_BRIDGE_STREAM_TIMEOUT_MS || DEFAULT_STREAM_WAIT_MS),
+): Promise<StreamAppendOutcome> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		if (attempt > 0) {
+			console.log(`[sitegeist-bridge] retry append_user_stream, attempt ${attempt + 1}/3`);
+			await new Promise(r => setTimeout(r, 2000));
+		}
+		const result = await doBridgeAppendUserStream(config, input, signal, onUpdate, waitMs);
+		if (result.kind === "error" && (result.error === "no_extension_client" || result.error === "no_sidepanel")) {
+			if (attempt < 2) continue;
+		}
+		return result;
+	}
+	return { kind: "error", id: "", error: "retry_exhausted" };
+}
+
+async function doBridgeAppendUserStream(
+	config: SitegeistBridgeConfig,
+	input: { sessionId?: string; text: string },
+	signal: AbortSignal | undefined,
+	onUpdate: AgentToolUpdateCallback<Record<string, unknown>> | undefined,
+	waitMs: number,
 ): Promise<StreamAppendOutcome> {
 	const id = randomUUID();
 	const url = bridgeWsUrl(config);
