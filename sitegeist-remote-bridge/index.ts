@@ -187,6 +187,28 @@ const pingTool = defineTool<typeof pingParameters, Record<string, unknown>>({
 	},
 });
 
+const listSessionsParams = Type.Object({});
+
+const listSessionsTool = defineTool<typeof listSessionsParams, Record<string, unknown>>({
+	name: "sitegeist_list_sessions",
+	label: "List Sitegeist sessions",
+	description: "List all Sitegeist sidepanel sessions with metadata (ID, name, model, messages).",
+	parameters: listSessionsParams,
+	async execute(_toolCallId, _params, signal, _onUpdate, _ctx) {
+		const loaded = loadSitegeistBridgeConfig();
+		if (!loaded.ok) {
+			return { content: [{ type: "text", text: loaded.error }], details: { error: loaded.error } };
+		}
+		try {
+			const r = await bridgeListSessions(loaded.config, signal);
+			const lines = r.sessions.map((s, i) => \`\${i+1}. \${s.name} (\${s.model}) — \${s.messageCount} msgs\`);
+			return { content: [{ type: "text", text: lines.length ? lines.join("\\n") : "No sessions found" }], details: r };
+		} catch (e) {
+			return { content: [{ type: "text", text: "Failed: " + (e as Error).message }], details: { error: (e as Error).message } };
+		}
+	},
+});
+
 /** Built-in pi tools safe for delegation. Never includes delegation tools. */
 const DELEGATABLE_PI_TOOLS = ["read", "bash", "edit", "write", "grep", "glob", "ls"];
 
@@ -336,4 +358,5 @@ export default function sitegeistRemoteBridgeExtension(pi: ExtensionAPI) {
 	});
 	pi.registerTool(appendTool);
 	pi.registerTool(pingTool);
+	pi.registerTool(listSessionsTool);
 }
