@@ -375,6 +375,28 @@ async function doBridgeAppendUserStream(
 	}
 }
 
+// ── list_sessions (pi → sitegeist): query sidepanel sessions ──
+
+export async function bridgeListSessions(
+	config: SitegeistBridgeConfig,
+	signal: AbortSignal | undefined,
+): Promise<{ sessions: Array<{id: string; name: string; provider: string; model: string; messageCount: number; lastUpdated: string}> }> {
+	const id = randomUUID();
+	const raw = await bridgeCliRoundTrip(
+		config,
+		(ws) => {
+			ws.send(JSON.stringify({ v: REMOTE_BRIDGE_PROTOCOL_V1, cmd: "list_sessions", id }));
+		},
+		signal,
+		DEFAULT_WAIT_MS,
+	);
+	if (typeof raw !== "object" || raw === null) throw new Error("empty response");
+	const o = raw as Record<string, unknown>;
+	if (o.type === "error") throw new Error((o.error as string) || "list_sessions error");
+	const payload = o.payload as { sessions?: unknown[] } | undefined;
+	return { sessions: (payload?.sessions as any[]) || [] };
+}
+
 // ── Persistent listener for exec_bash (Sitegeist → pi direction) ──
 
 let listenerWs: WebSocket | null = null;

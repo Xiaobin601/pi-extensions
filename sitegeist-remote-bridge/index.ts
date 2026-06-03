@@ -10,7 +10,7 @@ import {
 	type ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { bridgeAppendUserAndRun, bridgeAppendUserStream, bridgePing, startBridgeExecBashListener, stopBridgeExecBashListener, type DelegateHandler } from "./bridge-client";
+import { bridgeAppendUserAndRun, bridgeAppendUserStream, bridgePing, bridgeListSessions, startBridgeExecBashListener, stopBridgeExecBashListener, type DelegateHandler } from "./bridge-client";
 import { loadSitegeistBridgeConfig } from "./config";
 import {
 	SITEGEIST_BRIDGE_RESULT_CUSTOM_TYPE,
