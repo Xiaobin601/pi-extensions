@@ -10,7 +10,7 @@ import {
 	type ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { bridgeAppendUserAndRun, bridgeAppendUserStream, bridgePing, bridgeListSessions, startBridgeExecBashListener, stopBridgeExecBashListener, type DelegateHandler } from "./bridge-client";
+import { bridgeAppendUserAndRun, bridgeAppendUserStream, bridgePing, bridgeListSessions, bridgeLoadSession, startBridgeExecBashListener, stopBridgeExecBashListener, type DelegateHandler } from "./bridge-client";
 import { loadSitegeistBridgeConfig } from "./config";
 import {
 	SITEGEIST_BRIDGE_RESULT_CUSTOM_TYPE,
@@ -359,4 +359,20 @@ export default function sitegeistRemoteBridgeExtension(pi: ExtensionAPI) {
 	pi.registerTool(appendTool);
 	pi.registerTool(pingTool);
 	pi.registerTool(listSessionsTool);
+	pi.registerTool(defineTool<typeof listSessionsParams, Record<string, unknown>>({
+		name: "sitegeist_load_session",
+		label: "Load Sitegeist session",
+		description: "Load a specific Sitegeist sidepanel session by ID.",
+		parameters: Type.Object({ sessionId: Type.String({ description: "Session ID from sitegeist_list_sessions" }) }),
+		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
+			const loaded = loadSitegeistBridgeConfig();
+			if (!loaded.ok) return { content: [{ type: "text", text: loaded.error }], details: { error: loaded.error } };
+			try {
+				await bridgeLoadSession(loaded.config, (params as { sessionId: string }).sessionId, signal);
+				return { content: [{ type: "text", text: "Session loaded in Sitegeist sidepanel." }], details: {} };
+			} catch (e) {
+				return { content: [{ type: "text", text: "Failed: " + (e as Error).message }], details: { error: (e as Error).message } };
+			}
+		},
+	}));
 }

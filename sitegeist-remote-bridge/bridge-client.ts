@@ -397,6 +397,24 @@ export async function bridgeListSessions(
 	return { sessions: (payload?.sessions as any[]) || [] };
 }
 
+// ── load_session (pi → sitegeist): load a specific session ──
+
+export async function bridgeLoadSession(
+	config: SitegeistBridgeConfig,
+	sessionId: string,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	const id = randomUUID();
+	await bridgeCliRoundTrip(
+		config,
+		(ws) => {
+			ws.send(JSON.stringify({ v: REMOTE_BRIDGE_PROTOCOL_V1, cmd: "load_session", id, payload: { sessionId } }));
+		},
+		signal,
+		DEFAULT_WAIT_MS,
+	);
+}
+
 // ── Persistent listener for exec_bash (Sitegeist → pi direction) ──
 
 let listenerWs: WebSocket | null = null;
