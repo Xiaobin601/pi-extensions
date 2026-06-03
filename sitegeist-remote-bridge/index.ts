@@ -201,7 +201,7 @@ const listSessionsTool = defineTool<typeof listSessionsParams, Record<string, un
 		}
 		try {
 			const r = await bridgeListSessions(loaded.config, signal);
-			const lines = r.sessions.map((s, i) => \`\${i+1}. \${s.name} (\${s.model}) — \${s.messageCount} msgs\`);
+			const lines = r.sessions.map((s, i) => `${i+1}. ${s.name || '(unnamed)'} — model: ${s.provider}/${s.model} — ${s.messageCount} msgs — updated: ${s.lastUpdated?.slice(0,10) || '?'}`);
 			return { content: [{ type: "text", text: lines.length ? lines.join("\\n") : "No sessions found" }], details: r };
 		} catch (e) {
 			return { content: [{ type: "text", text: "Failed: " + (e as Error).message }], details: { error: (e as Error).message } };
